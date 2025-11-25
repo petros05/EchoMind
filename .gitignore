@@ -1,0 +1,24 @@
+## Node and general
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+## Environment and secrets
+.env
+.env.*
+server/.env
+client/.env
+
+## Logs
+*.log
+
+## Build and dist
+client/build/
+
+## OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
