@@ -47,6 +47,7 @@ The application is optimized for real-time, low-latency transcription with clear
   - **Summarize**: Generate concise summaries of the recorded session.
   - **Find Deadlines**: Extract dates, due dates, and time-bound tasks from the transcript.
   - **Ask Questions**: Ask questions about the transcript content or general questions. The backend decides when to answer from the transcript versus general knowledge.
+  - **Streaming responses**: OpenAI answers are streamed token‑by‑token to the UI using Server‑Sent Events (SSE), so users see the response appear in real time instead of waiting for the full answer.
 
 - **Modern UI**
   - React SPA with a three-column layout:
@@ -75,7 +76,9 @@ The application is optimized for real-time, low-latency transcription with clear
 6. The React app updates:
    - `partialText` for live captions.
    - `captions` when finalized text is received.
-7. The user can then query OpenAI via HTTP POST `/api/openai/query`, sending the transcript and a query type.
+7. The user can then query OpenAI via:
+   - HTTP POST `/api/openai/query` for non‑streaming responses (kept for compatibility), or
+   - HTTP GET `/api/openai/query/stream` using **Server‑Sent Events (SSE)** for streaming, token‑by‑token responses used by the React chat UI.
 
 ### Frontend (`client`)
 
@@ -90,7 +93,8 @@ The application is optimized for real-time, low-latency transcription with clear
 
 - `index.js`:
   - Express server exposing:
-    - `POST /api/openai/query` – forwards transcript and query to OpenAI Chat Completions.
+    - `POST /api/openai/query` – forwards transcript and query to OpenAI Chat Completions (non‑streaming).
+    - `GET /api/openai/query/stream` – SSE endpoint that streams OpenAI Chat Completions back to the client token‑by‑token.
     - `GET /test` – simple health-check endpoint.
   - Creates an HTTP server and attaches a `WebSocketServer` (from `ws`).
   - For each WebSocket client:
