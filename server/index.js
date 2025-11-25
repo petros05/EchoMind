@@ -11,11 +11,8 @@ dotenv.config();
 const PORT = process.env.PORT || 5000;
 const app = express();
 
-
-
 // Get AssemblyAI API key from environment or use fallback
-const assemblyAIKey =
-  process.env.ASSEMBLYAI_API_KEY || "eeeb95915dea417e82eebec47c1e211e";
+const assemblyAIKey = process.env.ASSEMBLYAI_API_KEY;
 
 // API key configuration
 const openai = new OpenAI({
@@ -31,7 +28,53 @@ app.use(
 );
 app.use(express.json());
 
-// OpenAI API endpoints
+// Helper to build OpenAI prompts
+function buildOpenAIPrompts({ transcript, query, queryType }) {
+  let systemPrompt = "";
+  let userPrompt = "";
+
+  switch (queryType) {
+    case "summary":
+      systemPrompt =
+        "You are a helpful AI assistant that creates concise, educational summaries of classroom transcripts. Focus on key concepts, important points, and learning objectives.";
+      userPrompt = `Please provide a summary of this class transcript:\n\n${transcript}`;
+      break;
+    case "deadline":
+      systemPrompt =
+        "You are a helpful AI assistant that identifies deadlines, due dates, and important dates mentioned in classroom transcripts. Extract and list all deadlines with clear formatting.";
+      userPrompt = `Please identify any deadlines, due dates, or important dates mentioned in this class transcript:\n\n${transcript}`;
+      break;
+    case "question": {
+      const isTranscriptRelated =
+        transcript &&
+        (query.toLowerCase().includes("class") ||
+          query.toLowerCase().includes("lecture") ||
+          query.toLowerCase().includes("transcript") ||
+          query.toLowerCase().includes("discussed") ||
+          query.toLowerCase().includes("mentioned") ||
+          transcript.toLowerCase().includes(query.toLowerCase().split(" ")[0]));
+
+      if (isTranscriptRelated && transcript.trim()) {
+        systemPrompt =
+          "Answer questions based on the provided class transcript. For math: use $expression$ for inline math and $$expression$$ for display math. Never use ( ) or [ ] for math.";
+        userPrompt = `Class transcript:\n\n${transcript}\n\nQuestion: ${query}`;
+      } else {
+        systemPrompt =
+          "Answer the question directly. For math: use $expression$ for inline math and $$expression$$ for display math. Never use ( ) or [ ] for math.";
+        userPrompt = query;
+      }
+      break;
+    }
+    default:
+      systemPrompt =
+        "Answer questions directly. For math: use $expression$ for inline math and $$expression$$ for display math. Never use ( ) or [ ] for math.";
+      userPrompt = query || `Analyze this transcript:\n\n${transcript}`;
+  }
+
+  return { systemPrompt, userPrompt };
+}
+
+// OpenAI API endpoint - non-streaming (kept for compatibility)
 app.post("/api/openai/query", async (req, res) => {
   try {
     const { transcript, query, queryType } = req.body;
@@ -40,48 +83,11 @@ app.post("/api/openai/query", async (req, res) => {
       return res.status(400).json({ error: "Transcript or query is required" });
     }
 
-    let systemPrompt = "";
-    let userPrompt = "";
-
-    switch (queryType) {
-      case "summary":
-        systemPrompt =
-          "You are a helpful AI assistant that creates concise, educational summaries of classroom transcripts. Focus on key concepts, important points, and learning objectives.";
-        userPrompt = `Please provide a summary of this class transcript:\n\n${transcript}`;
-        break;
-      case "deadline":
-        systemPrompt =
-          "You are a helpful AI assistant that identifies deadlines, due dates, and important dates mentioned in classroom transcripts. Extract and list all deadlines with clear formatting.";
-        userPrompt = `Please identify any deadlines, due dates, or important dates mentioned in this class transcript:\n\n${transcript}`;
-        break;
-      case "question":
-        // Check if the question is related to the transcript content
-        const isTranscriptRelated =
-          transcript &&
-          (query.toLowerCase().includes("class") ||
-            query.toLowerCase().includes("lecture") ||
-            query.toLowerCase().includes("transcript") ||
-            query.toLowerCase().includes("discussed") ||
-            query.toLowerCase().includes("mentioned") ||
-            transcript
-              .toLowerCase()
-              .includes(query.toLowerCase().split(" ")[0])); // Check if first word of query appears in transcript
-
-        if (isTranscriptRelated && transcript.trim()) {
-          systemPrompt =
-            "Answer questions based on the provided class transcript. For math: use $expression$ for inline math and $$expression$$ for display math. Never use ( ) or [ ] for math.";
-          userPrompt = `Class transcript:\n\n${transcript}\n\nQuestion: ${query}`;
-        } else {
-          systemPrompt =
-            "Answer the question directly. For math: use $expression$ for inline math and $$expression$$ for display math. Never use ( ) or [ ] for math.";
-          userPrompt = query;
-        }
-        break;
-      default:
-        systemPrompt =
-          "Answer questions directly. For math: use $expression$ for inline math and $$expression$$ for display math. Never use ( ) or [ ] for math.";
-        userPrompt = query || `Analyze this transcript:\n\n${transcript}`;
-    }
+    const { systemPrompt, userPrompt } = buildOpenAIPrompts({
+      transcript,
+      query,
+      queryType,
+    });
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-2025-04-14",
@@ -117,6 +123,98 @@ app.post("/api/openai/query", async (req, res) => {
       error: "Failed to process request with OpenAI",
       details: error.message,
     });
+  }
+});
+
+// OpenAI API endpoint - Server-Sent Events streaming
+app.get("/api/openai/query/stream", async (req, res) => {
+  try {
+    const { transcript = "", query = "", queryType = "question" } = req.query;
+
+    if (!transcript && !query) {
+      res.writeHead(400, {
+        "Content-Type": "text/event-stream",
+        Connection: "keep-alive",
+        "Cache-Control": "no-cache",
+      });
+      res.write(
+        `event: error\ndata: ${JSON.stringify({
+          error: "Transcript or query is required",
+        })}\n\n`
+      );
+      return res.end();
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      Connection: "keep-alive",
+      "Cache-Control": "no-cache",
+    });
+
+    // Flush headers immediately if possible so the browser starts the stream
+    if (typeof res.flushHeaders === "function") {
+      res.flushHeaders();
+    }
+
+    // Send an initial comment to open the SSE stream
+    res.write(`: connected\n\n`);
+
+    const { systemPrompt, userPrompt } = buildOpenAIPrompts({
+      transcript,
+      query,
+      queryType,
+    });
+
+    const stream = await openai.chat.completions.create({
+      model: "gpt-4.1-2025-04-14",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      max_tokens: 1200,
+      temperature: 0.4,
+      stream: true,
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || "";
+      if (content) {
+        res.write(`data: ${JSON.stringify({ token: content })}\n\n`);
+      }
+    }
+
+    res.write(`event: done\ndata: {}\n\n`);
+    res.end();
+  } catch (error) {
+    if (!res.headersSent) {
+      res.writeHead(500, {
+        "Content-Type": "text/event-stream",
+        Connection: "keep-alive",
+        "Cache-Control": "no-cache",
+      });
+    }
+
+    let errorPayload = {
+      error: "Failed to process request with OpenAI",
+      details: error.message,
+    };
+
+    if (error.code === "invalid_api_key") {
+      errorPayload = {
+        error: "Invalid OpenAI API key. Please check your .env file.",
+      };
+    } else if (error.code === "insufficient_quota" || error.status === 429) {
+      errorPayload = {
+        error:
+          "OpenAI quota exceeded. Your free credits may have expired or you need to add billing to your OpenAI account.",
+        details:
+          "Visit https://platform.openai.com/account/billing to add a payment method, even for free usage.",
+        errorType: "quota_exceeded",
+      };
+    }
+
+    res.write(`event: error\ndata: ${JSON.stringify(errorPayload)}\n\n`);
+    res.end();
   }
 });
 

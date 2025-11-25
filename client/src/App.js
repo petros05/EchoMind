@@ -361,46 +361,123 @@ export default function App() {
         addMessage(actionText, "user");
       }
 
+      // Prepare an empty AI message that we'll fill as tokens stream in
+      const aiMessageId = Date.now() + 1;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: aiMessageId,
+          content: "",
+          type: "ai",
+          timestamp: new Date(),
+          isError: false,
+        },
+      ]);
+
       setIsLoadingAI(true);
 
       try {
-        const response = await fetch("/api/openai/query", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            transcript: captions,
-            query: message,
-            queryType: queryType,
-          }),
+        const params = new URLSearchParams({
+          transcript: captions || "",
+          query: message || "",
+          queryType: queryType || "question",
         });
 
-        const data = await response.json();
+        // Connect directly to backend to avoid dev-proxy buffering SSE
+        const eventSource = new EventSource(
+          `http://localhost:5000/api/openai/query/stream?${params.toString()}`
+        );
 
-        if (!response.ok) {
-          throw new Error(data.error || "Failed to get response from OpenAI");
-        }
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            const token = data.token || "";
+            if (!token) return;
 
-        addMessage(data.response, "ai");
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === aiMessageId
+                  ? { ...msg, content: (msg.content || "") + token }
+                  : msg
+              )
+            );
+          } catch (e) {
+            // Ignore malformed events
+          }
+        };
+
+        eventSource.addEventListener("done", () => {
+          setIsLoadingAI(false);
+          eventSource.close();
+        });
+
+        eventSource.addEventListener("error", (event) => {
+          try {
+            const data = event.data ? JSON.parse(event.data) : null;
+            const message =
+              data?.error ||
+              data?.details ||
+              "Failed to process your request";
+
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === aiMessageId
+                  ? {
+                      ...msg,
+                      content: message,
+                      isError: true,
+                    }
+                  : msg
+              )
+            );
+          } catch (e) {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === aiMessageId
+                  ? {
+                      ...msg,
+                      content: "Failed to process your request",
+                      isError: true,
+                    }
+                  : msg
+              )
+            );
+          } finally {
+            setIsLoadingAI(false);
+            eventSource.close();
+          }
+        });
       } catch (error) {
         if (
-          error.message.includes("quota exceeded") ||
-          error.message.includes("insufficient_quota")
+          error.message &&
+          (error.message.includes("quota exceeded") ||
+            error.message.includes("insufficient_quota"))
         ) {
-          addMessage(
-            "OpenAI quota exceeded. Please add billing to your OpenAI account. Visit: https://platform.openai.com/account/billing",
-            "ai",
-            true
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === aiMessageId
+                ? {
+                    ...msg,
+                    content:
+                      "OpenAI quota exceeded. Please add billing to your OpenAI account. Visit: https://platform.openai.com/account/billing",
+                    isError: true,
+                  }
+                : msg
+            )
           );
         } else {
-          addMessage(
-            error.message || "Failed to process your request",
-            "ai",
-            true
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === aiMessageId
+                ? {
+                    ...msg,
+                    content: error.message || "Failed to process your request",
+                    isError: true,
+                  }
+                : msg
+            )
           );
         }
-      } finally {
         setIsLoadingAI(false);
       }
     },
