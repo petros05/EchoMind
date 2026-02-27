@@ -415,9 +415,7 @@ export default function App() {
           try {
             const data = event.data ? JSON.parse(event.data) : null;
             const message =
-              data?.error ||
-              data?.details ||
-              "Failed to process your request";
+              data?.error || data?.details || "Failed to process your request";
 
             setMessages((prev) =>
               prev.map((msg) =>
@@ -521,7 +519,7 @@ export default function App() {
     setError("");
     setMessages([]);
     setCurrentInput("");
-    timerRef.current.reset()
+    timerRef.current.reset();
   };
 
   // Format captions for display
@@ -553,10 +551,9 @@ export default function App() {
         <div className="header">
           <div>
             <h1 className="title">
-              EchoMind
-              <span className="title-gradient"> AI</span>
+              <span className="title-gradient">AI</span>-Powered Lecture
+              Transcription
             </h1>
-            
           </div>
           <button
             onClick={clearAll}
@@ -724,32 +721,32 @@ export default function App() {
           <div className="captions-section">
             <div className="captions-header">
               <div>
-              <h3>Live Captions</h3>
-              <div
-              className={`connection-status ${
-                 isConnecting
-                  ? "connecting"
-                  : isConnected
-                  ? "connected"
-                  : "disconnected"
-              }`}
-            >
-              <div
-                className={`connection-dot ${
-                  isConnecting
-                    ? "connecting"
+                <h3>Live Captions</h3>
+                <div
+                  className={`connection-status ${
+                    isConnecting
+                      ? "connecting"
+                      : isConnected
+                      ? "connected"
+                      : "disconnected"
+                  }`}
+                >
+                  <div
+                    className={`connection-dot ${
+                      isConnecting
+                        ? "connecting"
+                        : isConnected
+                        ? "connected"
+                        : "disconnected"
+                    }`}
+                  ></div>
+                  {isConnecting
+                    ? "Connecting..."
                     : isConnected
-                    ? "connected"
-                    : "disconnected"
-                }`}
-              ></div>
-              {isConnecting
-                ? "Connecting..."
-                : isConnected
-                ? "Recording..."
-                : "Disconnected"}
-            </div>
-            </div>
+                    ? "Recording..."
+                    : "Disconnected"}
+                </div>
+              </div>
               <Timer ref={timerRef} />
             </div>
             <div className="captions-area">
