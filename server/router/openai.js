@@ -3,7 +3,7 @@ import OpenAI from "openai";
 
 const router = express.Router();
 
-function getOpenAI() {
+export function getOpenAI() {
   return new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
   });
@@ -52,6 +52,44 @@ function buildOpenAIPrompts({ transcript, query, queryType }) {
   }
 
   return { systemPrompt, userPrompt };
+}
+
+const DETECTED_QUESTION_ANSWER_SYSTEM = `You are a helpful teaching assistant. Your answers are for a student who may need to say them out loud to a professor.
+
+Rules:
+- Give answers that are **ready to talk**: natural, spoken-style phrases the student can say directly (e.g. "The main point is…", "So in short…").
+- Format the entire answer in **bullet points** only. No long paragraphs.
+- **Bold** the key terms and the most important parts (use **keyword** in Markdown). Those bolded parts are the core answer the student can read or say when the professor asks.
+- Use the class transcript when relevant, and your own knowledge when needed. Do not mention the transcript or that you are an assistant.`;
+
+/**
+ * Stream answer for a detected question (used by question-detection SSE).
+ * @param {import("openai").OpenAI} openai
+ * @param {string} fullTranscript
+ * @param {string} questionText
+ * @param {(token: string) => void} onToken
+ */
+export async function streamDetectedQuestionAnswer(
+  openai,
+  fullTranscript,
+  questionText,
+  onToken
+) {
+  const userContent = `Class transcript:\n\n${fullTranscript || "(none yet)"}\n\nQuestion from the last utterance: ${questionText}`;
+  const stream = await openai.chat.completions.create({
+    model: "gpt-4.1-2025-04-14",
+    messages: [
+      { role: "system", content: DETECTED_QUESTION_ANSWER_SYSTEM },
+      { role: "user", content: userContent },
+    ],
+    max_tokens: 800,
+    temperature: 0.4,
+    stream: true,
+  });
+  for await (const chunk of stream) {
+    const content = chunk.choices[0]?.delta?.content || "";
+    if (content && onToken) onToken(content);
+  }
 }
 
 // POST /api/openai/query - non-streaming (kept for compatibility)

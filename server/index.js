@@ -1,12 +1,14 @@
 // server.js
 import express from "express";
 import WebSocket, { WebSocketServer } from "ws";
+import crypto from "crypto";
 import dotenv from "dotenv";
 import cors from "cors";
 import { AssemblyAIStreaming } from "./router/assemblyai-streaming.js";
 import testRouter from "./router/test.js";
-import openaiRouter from "./router/openai.js";
+import openaiRouter, { getOpenAI } from "./router/openai.js";
 import createAuthRouter from "./router/auth.js";
+import { checkAndAnswerIfQuestion } from "./question-detection.js";
 
 dotenv.config();
 
@@ -14,6 +16,9 @@ const PORT = process.env.PORT || 5000;
 const app = express();
 
 const assemblyAIKey = process.env.ASSEMBLYAI_API_KEY;
+
+// SSE connections for detected-question answers (sessionId -> response)
+const sessionIdToSSE = new Map();
 
 // Middleware
 app.use(
@@ -44,18 +49,41 @@ try {
 }
 app.use("/", createAuthRouter(auth));
 
+// SSE endpoint for detected-question answers (client opens with sessionId from WebSocket)
+app.get("/api/openai/detected-questions/stream", (req, res) => {
+  const sessionId = req.query.sessionId;
+  if (!sessionId) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "sessionId required" }));
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    Connection: "keep-alive",
+    "Cache-Control": "no-cache",
+  });
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  sessionIdToSSE.set(sessionId, res);
+  res.on("close", () => sessionIdToSSE.delete(sessionId));
+});
+
 // WebSocket connection handler
 function setupWebSocketHandlers(wss) {
   wss.on("connection", async (client) => {
+    const sessionId = crypto.randomUUID();
+    client.sessionId = sessionId;
     const assemblyAI = new AssemblyAIStreaming(assemblyAIKey);
     let isSessionActive = false;
     let isTerminating = false;
+    let accumulatedTranscript = "";
+    let lastFinalText = "";
 
     try {
       client.send(
         JSON.stringify({
           type: "connection_established",
           message: "WebSocket connection established successfully",
+          sessionId,
         })
       );
     } catch (sendError) {
@@ -68,6 +96,50 @@ function setupWebSocketHandlers(wss) {
       try {
         await assemblyAI.connect(
           (data) => {
+            if (data.final && data.text) {
+              const text = (data.text || "").trim();
+              if (text) {
+                accumulatedTranscript += text + " ";
+                lastFinalText = text;
+                try {
+                  const openai = getOpenAI();
+                  const sseRes = sessionIdToSSE.get(client.sessionId);
+                  const callbacks = sseRes
+                    ? {
+                        onQuestion(question) {
+                          sseRes.write(
+                            `event: question\ndata: ${JSON.stringify({ question })}\n\n`
+                          );
+                          if (typeof sseRes.flush === "function") sseRes.flush();
+                        },
+                        onToken(token) {
+                          sseRes.write(
+                            `event: token\ndata: ${JSON.stringify({ token })}\n\n`
+                          );
+                          if (typeof sseRes.flush === "function") sseRes.flush();
+                        },
+                        onDone() {
+                          sseRes.write(`event: done\ndata: {}\n\n`);
+                          if (typeof sseRes.flush === "function") sseRes.flush();
+                        },
+                      }
+                    : null;
+                  checkAndAnswerIfQuestion(
+                    openai,
+                    lastFinalText,
+                    accumulatedTranscript,
+                    callbacks
+                  ).catch((err) => {
+                    if (sseRes)
+                      sseRes.write(
+                        `event: error\ndata: ${JSON.stringify({ error: err.message })}\n\n`
+                      );
+                  });
+                } catch (e) {
+                  // OPENAI_API_KEY missing or invalid
+                }
+              }
+            }
             try {
               client.send(JSON.stringify(data));
             } catch (sendError) {

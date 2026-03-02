@@ -26,6 +26,8 @@ export default function App() {
   const messagesEndRef = useRef(null);
   const captionsEndRef = useRef(null);
   const wsManagerRef = useRef(null);
+  const detectedQuestionsEventSourceRef = useRef(null);
+  const detectedAnswerMessageIdRef = useRef(null);
 
   // Audio data handler for recorder
   const handleAudioData = useCallback((base64AudioData) => {
@@ -89,6 +91,72 @@ export default function App() {
         if (data.type === "connection_established") {
           setWsConnected(true);
           setError("");
+          if (data.sessionId) {
+            if (detectedQuestionsEventSourceRef.current) {
+              detectedQuestionsEventSourceRef.current.close();
+            }
+            const es = new EventSource(
+              `http://localhost:5000/api/openai/detected-questions/stream?sessionId=${encodeURIComponent(data.sessionId)}`
+            );
+            detectedQuestionsEventSourceRef.current = es;
+            es.addEventListener("question", (event) => {
+              try {
+                const { question } = JSON.parse(event.data);
+                if (question) {
+                  addMessage(question, "user");
+                  const aiMessageId = Date.now() + 1;
+                  detectedAnswerMessageIdRef.current = aiMessageId;
+                  setMessages((prev) => [
+                    ...prev,
+                    {
+                      id: aiMessageId,
+                      content: "",
+                      type: "ai",
+                      timestamp: new Date(),
+                      isError: false,
+                    },
+                  ]);
+                  setTimeout(scrollToBottom, 100);
+                }
+              } catch (e) {}
+            });
+            es.addEventListener("token", (event) => {
+              try {
+                const data = JSON.parse(event.data);
+                const token = data.token || "";
+                if (!token) return;
+                const id = detectedAnswerMessageIdRef.current;
+                if (id)
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === id
+                        ? { ...msg, content: (msg.content || "") + token }
+                        : msg
+                    )
+                  );
+                setTimeout(scrollToBottom, 100);
+              } catch (e) {}
+            });
+            es.addEventListener("done", () => {
+              detectedAnswerMessageIdRef.current = null;
+            });
+            es.addEventListener("error", (event) => {
+              try {
+                const data = event.data ? JSON.parse(event.data) : null;
+                const errMsg = data?.error || "Failed to get answer";
+                const id = detectedAnswerMessageIdRef.current;
+                if (id)
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === id
+                        ? { ...msg, content: errMsg, isError: true }
+                        : msg
+                    )
+                  );
+              } catch (e) {}
+              detectedAnswerMessageIdRef.current = null;
+            });
+          }
           return;
         }
 
@@ -142,6 +210,10 @@ export default function App() {
         setIsConnected(false);
         setWsConnected(false);
         setIsConnecting(false);
+        if (detectedQuestionsEventSourceRef.current) {
+          detectedQuestionsEventSourceRef.current.close();
+          detectedQuestionsEventSourceRef.current = null;
+        }
         if (isRecording) {
           setError("Connection lost. Please try again.");
           stopRecording(); // Stop recording when connection is lost
@@ -150,6 +222,10 @@ export default function App() {
     }
 
     return () => {
+      if (detectedQuestionsEventSourceRef.current) {
+        detectedQuestionsEventSourceRef.current.close();
+        detectedQuestionsEventSourceRef.current = null;
+      }
       // Safety: Stop AssemblyAI and close connection when component unmounts
       if (wsManagerRef.current) {
         if (wsManagerRef.current.getStatus().isConnected) {
@@ -158,7 +234,8 @@ export default function App() {
         wsManagerRef.current.close();
       }
     };
-  }, [isRecording, scrollCaptionsToBottom, stopRecording]); // Include dependencies to avoid stale closures
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- addMessage/scrollToBottom omitted: handlers registered once to avoid re-subscribing; setState is stable
+  }, [isRecording, scrollCaptionsToBottom, stopRecording]);
 
   // Update error state when recorder error changes
   useEffect(() => {
